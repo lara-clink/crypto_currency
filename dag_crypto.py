@@ -1,12 +1,16 @@
 
 from json.encoder import JSONEncoder
+import json
 import requests
 from datetime import datetime
 from airflow import DAG
 from airflow.operators.python_operator import PythonOperator
 from airflow.operators.dummy_operator import DummyOperator
+from airflow.hooks.base_hook import BaseHook
 from airflow.utils.dates import days_ago
-from google.oauth2 import service_account
+import os
+os.environ["GOOGLE_APPLICATION_CREDENTIALS"]="/home/laraclink/airflow/dags/data-case-study-322621-419f15740599.json"
+
 
 from google.cloud import bigquery
 
@@ -20,8 +24,6 @@ with DAG(
     schedule_interval='0 7 * * *',
     start_date=days_ago(2),
 ) as dag:
-
-#BASE_DIR = os.path.abspath(os.path.dirname(__file__))
 
     class Coin:
         def __init__(self, id, symbol, name, usd, brl, eur):
@@ -38,50 +40,49 @@ with DAG(
                 return o.__dict__
 
 def upload_bigquery(coin_result):
-    key_path = "data-case-study-322621-419f15740599.json"
-
+    key_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
+    from google.oauth2 import service_account
     credentials = service_account.Credentials.from_service_account_file(
-        key_path, scopes=["https://www.googleapis.com/auth/cloud-platform"],
+    key_path, scopes=["https://www.googleapis.com/auth/cloud-platform"],
     )
     client = bigquery.Client()
-    table_id = "data-case-study-322621.laraclink.crypto_currency"
-    client = bigquery.Client(credentials=credentials, project=credentials.project_id,)
+    table_id = "crypto_currency"
+    client = bigquery.Client(credentials=credentials, project= credentials.project_id)
 
-    # Construct a BigQuery client object.
-    job_config = bigquery.LoadJobConfig(
-        schema=[
-            bigquery.SchemaField("id", "STRING", mode="REQUIRED"),
-            bigquery.SchemaField("symbol", "STRING", mode="REQUIRED"),
-            bigquery.SchemaField("name", "STRING", mode="REQUIRED"),
-            bigquery.SchemaField("snapshot_date", "DATE", mode="REQUIRED"),
-            bigquery.SchemaField("current_price_usd", "FLOAT", mode="REQUIRED"),
-            bigquery.SchemaField("current_price_brl", "FLOAT", mode="REQUIRED"),
-            bigquery.SchemaField("current_price_eur", "FLOAT", mode="REQUIRED"),
-        ],
-        source_format=bigquery.SourceFormat.NEWLINE_DELIMITED_JSON,
-    )
-    uri = coin_result
+    coin_result = coin_result.replace("[", "").replace("]", "").replace(" ", "")
+    with open("coin_result.json", "w") as outfile:
+        outfile.write(coin_result)
 
-    load_job = client.load_table_from_uri(
-        uri,
-        table_id,
-        location="US",  # Must match the destination dataset location.
-        job_config=job_config,
-    )  # Make an API request.
+    filename = '/home/laraclink/airflow/dags/coin_result.json'
+    dataset_id = 'laraclink'
 
-    load_job.result()  # Waits for the job to complete.
-    destination_table = client.get_table(table_id)
-    print("Loaded {} rows.".format(destination_table.num_rows))                
+    dataset_ref = client.dataset(dataset_id)
+    table_ref = dataset_ref.table(table_id)
+    job_config = bigquery.LoadJobConfig()
+    job_config.source_format = bigquery.SourceFormat.NEWLINE_DELIMITED_JSON
+    job_config.autodetect = True
+
+    with open(filename, "rb") as source_file:
+        job = client.load_table_from_file(
+            source_file,
+            table_ref,
+            location="us",  # Must match the destination dataset location.
+            job_config=job_config,
+        )  # API request
+
+    job.result()  # Waits for table load to complete.
+
+    print("Loaded {} rows into {}:{}.".format(job.output_rows, dataset_id, table_id))            
 
 def bitcoin_currency():
     bitcoin_requests = requests.get('https://api.coingecko.com/api/v3/coins/bitcoin').json()
-    bitcoin = Coin(bitcoin_requests['id'], bitcoin_requests['symbol'], bitcoin_requests['name'], bitcoin_requests['market_data']['current_price']['usd'], bitcoin_requests['market_data']['current_price']['brl'], bitcoin_requests['market_data']['current_price']['eur']), 
+    bitcoin = Coin(bitcoin_requests['id'], bitcoin_requests['symbol'], bitcoin_requests['name'], float(bitcoin_requests['market_data']['current_price']['usd']), float(bitcoin_requests['market_data']['current_price']['brl']), float(bitcoin_requests['market_data']['current_price']['eur'])), 
     upload_bigquery(CoinEncoder().encode(bitcoin))
     return CoinEncoder().encode(bitcoin)
 
 def ethereum_currency():
     ethereum_requests = requests.get('https://api.coingecko.com/api/v3/coins/ethereum').json()
-    ethereum = Coin(ethereum_requests['id'], ethereum_requests['symbol'], ethereum_requests['name'], ethereum_requests['market_data']['current_price']['usd'], ethereum_requests['market_data']['current_price']['brl'], ethereum_requests['market_data']['current_price']['eur']), 
+    ethereum = Coin(ethereum_requests['id'], ethereum_requests['symbol'], ethereum_requests['name'], float(ethereum_requests['market_data']['current_price']['usd']), float(ethereum_requests['market_data']['current_price']['brl']), float(ethereum_requests['market_data']['current_price']['eur'])), 
     upload_bigquery(CoinEncoder().encode(ethereum))
     return CoinEncoder().encode(ethereum)
 
